@@ -35,6 +35,9 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+
     steps:
 
       - name: Checkout
@@ -48,11 +51,21 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker Image
+      - name: Build and Push Docker Image
+        id: build-image
         run: |
           docker build -t cicd-project .
+
+          docker tag cicd-project:latest \
+          ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+
+          docker push \
+          ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest" >> $GITHUB_OUTPUT
 
   deploy:
 
@@ -63,4 +76,19 @@ jobs:
     steps:
 
       - name: Deploy to EC2
-        run: echo "Deployment step"
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          script: |
+            docker pull ${{ needs.build-and-push.outputs.image }}
+
+            docker stop flask-app || true
+            docker rm flask-app || true
+
+            docker run -d \
+              --name flask-app \
+              -p 5000:5000 \
+              ${{ needs.build-and-push.outputs.image }}
